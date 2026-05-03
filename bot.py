@@ -192,13 +192,11 @@ class ConfirmView(discord.ui.View):
             file = await original_message.attachments[0].to_file()
             await interaction.user.send("원본 파일", file=file)
 
-            with open(VIEW_LOG_FILE, "a", encoding="utf-8") as f:
-                f.write(
-                    f"{datetime.now()} | {interaction.user} | {interaction.user.id} | "
-                    f"{interaction.user.display_name} | "
-                    f"{original_filename} | "
-                    f"{original_message.channel.id} | {original_message.id}\n"
-                )
+            log_channel = discord.utils.get(interaction.guild.text_channels, name="로그")
+if log_channel:
+    await log_channel.send(
+        f"{datetime.now()} | {interaction.user} | {interaction.user.id} | {original_filename}"
+    )
 
             await interaction.response.edit_message(content="DM 전송 완료", view=None)
 
