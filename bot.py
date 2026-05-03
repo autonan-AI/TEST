@@ -19,8 +19,11 @@ VIEW_LOG_FILE = LOG_DIR / "view_log.txt"
 
 def load_contents():
     if CONTENTS_FILE.exists():
-        with open(CONTENTS_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        try:
+            with open(CONTENTS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            data = {}
     else:
         data = {}
 
@@ -47,11 +50,86 @@ def get_original_filename(thumbnail_filename):
     return None
 
 
-async def get_original_message(channel_id, message_id):
-    channel = bot.get_channel(int(channel_id))
-    if channel is None:
-        channel = await bot.fetch_channel(int(channel_id))
-    return await channel.fetch_message(int(message_id))
+def same_filename(a, b):
+    return str(a).lower() == str(b).lower()
+
+
+def get_original_channel(guild):
+    if guild is None:
+        return None
+
+    for channel in guild.text_channels:
+        if channel.name == ORIGINAL_CHANNEL_NAME:
+            return channel
+    return None
+
+
+async def find_original_message_by_filename(guild, filename):
+    if not guild or not filename:
+        return None
+
+    contents = load_contents()
+    saved = contents.get("originals", {}).get(filename)
+
+    if saved:
+        try:
+            channel = bot.get_channel(int(saved["channel_id"]))
+            if channel is None:
+                channel = await bot.fetch_channel(int(saved["channel_id"]))
+
+            msg = await channel.fetch_message(int(saved["message_id"]))
+            if msg.attachments:
+                return msg
+        except Exception as e:
+            print("저장된 원본 메시지 접근 실패:", filename, repr(e))
+
+    original_channel = get_original_channel(guild)
+    if original_channel is None:
+        print("원본 채널 없음:", ORIGINAL_CHANNEL_NAME)
+        return None
+
+    try:
+        async for msg in original_channel.history(limit=1000):
+            for attachment in msg.attachments:
+                if same_filename(attachment.filename, filename):
+                    contents = load_contents()
+                    contents["originals"][attachment.filename] = {
+                        "message_id": msg.id,
+                        "channel_id": msg.channel.id,
+                        "user_id": msg.author.id,
+                    }
+                    save_contents(contents)
+                    print("원본 재검색 성공:", attachment.filename)
+                    return msg
+    except Exception as e:
+        print("원본 채널 검색 실패:", filename, repr(e))
+
+    print("원본 검색 실패:", filename)
+    return None
+
+
+async def find_thumbnail_message_for_button(button_message):
+    if button_message is None:
+        return None
+
+    contents = load_contents()
+    button_data = contents.get("buttons", {}).get(str(button_message.id))
+    if button_data and button_data.get("thumbnail_message_id"):
+        try:
+            msg = await button_message.channel.fetch_message(int(button_data["thumbnail_message_id"]))
+            if msg.attachments:
+                return msg
+        except Exception as e:
+            print("저장된 썸네일 메시지 접근 실패:", repr(e))
+
+    try:
+        async for msg in button_message.channel.history(limit=10, before=button_message):
+            if msg.attachments:
+                return msg
+    except Exception as e:
+        print("썸네일 메시지 검색 실패:", repr(e))
+
+    return None
 
 
 class DownloadView(discord.ui.View):
@@ -74,18 +152,38 @@ class ConfirmView(discord.ui.View):
 
     @discord.ui.button(label="예")
     async def yes(self, interaction: discord.Interaction, button: discord.ui.Button):
-        contents = load_contents()
-        button_data = contents.get("buttons", {}).get(self.button_message_id)
-
-        if not button_data:
-            await interaction.response.edit_message(content="연결된 원본이 없습니다", view=None)
-            return
-
         try:
-            original_message = await get_original_message(
-                button_data["original_channel_id"],
-                button_data["original_message_id"],
-            )
+            button_message = interaction.message
+            original_message = None
+            original_filename = ""
+
+            contents = load_contents()
+            button_data = contents.get("buttons", {}).get(self.button_message_id)
+
+            if button_data and button_data.get("original_message_id") and button_data.get("original_channel_id"):
+                original_filename = button_data.get("original_filename", "")
+                try:
+                    channel = bot.get_channel(int(button_data["original_channel_id"]))
+                    if channel is None:
+                        channel = await bot.fetch_channel(int(button_data["original_channel_id"]))
+                    original_message = await channel.fetch_message(int(button_data["original_message_id"]))
+                except Exception as e:
+                    print("버튼 기록 원본 접근 실패:", repr(e))
+                    original_message = None
+
+            if original_message is None:
+                thumbnail_message = await find_thumbnail_message_for_button(button_message)
+                if thumbnail_message and thumbnail_message.attachments:
+                    thumbnail_filename = thumbnail_message.attachments[0].filename
+                    original_filename = get_original_filename(thumbnail_filename)
+                    original_message = await find_original_message_by_filename(
+                        interaction.guild,
+                        original_filename,
+                    )
+
+            if original_message is None:
+                await interaction.response.edit_message(content="연결된 원본이 없습니다", view=None)
+                return
 
             if not original_message.attachments:
                 await interaction.response.edit_message(content="원본 파일을 찾을 수 없습니다", view=None)
@@ -98,8 +196,8 @@ class ConfirmView(discord.ui.View):
                 f.write(
                     f"{datetime.now()} | {interaction.user} | {interaction.user.id} | "
                     f"{interaction.user.display_name} | "
-                    f"{button_data.get('original_filename', '')} | "
-                    f"{button_data['original_channel_id']} | {button_data['original_message_id']}\n"
+                    f"{original_filename} | "
+                    f"{original_message.channel.id} | {original_message.id}\n"
                 )
 
             await interaction.response.edit_message(content="DM 전송 완료", view=None)
@@ -109,9 +207,10 @@ class ConfirmView(discord.ui.View):
                 content="DM 전송 실패 (DM 차단 또는 민감 콘텐츠 설정 문제)",
                 view=None,
             )
-        except Exception:
+        except Exception as e:
+            print("DM 전송 처리 실패:", repr(e))
             await interaction.response.edit_message(
-                content="DM 전송 실패 (DM 차단 또는 설정 문제)",
+                content="DM 전송 실패 (원본 접근 또는 설정 문제)",
                 view=None,
             )
 
@@ -157,9 +256,14 @@ async def on_message(message):
             return
 
         original_filename = get_original_filename(attachment.filename)
+        original_message = await find_original_message_by_filename(message.guild, original_filename)
         original_data = None
-        if original_filename and original_filename in contents["originals"]:
-            original_data = contents["originals"][original_filename]
+
+        if original_message:
+            original_data = {
+                "channel_id": original_message.channel.id,
+                "message_id": original_message.id,
+            }
 
         content_id = str(message.id)
         contents["thumbnails"][content_id] = {
