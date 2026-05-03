@@ -7,14 +7,12 @@ import discord
 from discord.ext import commands
 
 ORIGINAL_CHANNEL_NAME = "크리에이터원본"
+LOG_CHANNEL_NAME = "로그"
 
 DATA_DIR = Path("data")
 DATA_DIR.mkdir(exist_ok=True)
-LOG_DIR = Path("logs")
-LOG_DIR.mkdir(exist_ok=True)
 
 CONTENTS_FILE = DATA_DIR / "contents.json"
-VIEW_LOG_FILE = LOG_DIR / "view_log.txt"
 
 
 def load_contents():
@@ -45,8 +43,10 @@ def get_original_filename(thumbnail_filename):
     path = Path(thumbnail_filename)
     stem = path.stem
     suffix = path.suffix
+
     if stem.lower().endswith("s"):
         return stem[:-1] + suffix
+
     return None
 
 
@@ -61,6 +61,7 @@ def get_original_channel(guild):
     for channel in guild.text_channels:
         if channel.name == ORIGINAL_CHANNEL_NAME:
             return channel
+
     return None
 
 
@@ -114,6 +115,7 @@ async def find_thumbnail_message_for_button(button_message):
 
     contents = load_contents()
     button_data = contents.get("buttons", {}).get(str(button_message.id))
+
     if button_data and button_data.get("thumbnail_message_id"):
         try:
             msg = await button_message.channel.fetch_message(int(button_data["thumbnail_message_id"]))
@@ -130,6 +132,29 @@ async def find_thumbnail_message_for_button(button_message):
         print("썸네일 메시지 검색 실패:", repr(e))
 
     return None
+
+
+async def send_log(interaction, original_filename, original_message):
+    if interaction.guild is None:
+        return
+
+    log_channel = discord.utils.get(interaction.guild.text_channels, name=LOG_CHANNEL_NAME)
+    if log_channel is None:
+        print("로그 채널 없음:", LOG_CHANNEL_NAME)
+        return
+
+    member = interaction.guild.get_member(interaction.user.id)
+    server_name = member.display_name if member else interaction.user.name
+    discord_name = interaction.user.name
+
+    channel_id = original_message.channel.id if original_message else ""
+    message_id = original_message.id if original_message else ""
+
+    await log_channel.send(
+        f"{datetime.now()} | 서버닉네임: {server_name} | 디코ID: @{discord_name} | "
+        f"유저고유ID: {interaction.user.id} | 파일: {original_filename} | "
+        f"원본채널ID: {channel_id} | 원본문자ID: {message_id}"
+    )
 
 
 class DownloadView(discord.ui.View):
@@ -160,12 +185,15 @@ class ConfirmView(discord.ui.View):
             contents = load_contents()
             button_data = contents.get("buttons", {}).get(self.button_message_id)
 
-            if button_data and button_data.get("original_message_id") and button_data.get("original_channel_id"):
+            if button_data:
                 original_filename = button_data.get("original_filename", "")
+
+            if button_data and button_data.get("original_message_id") and button_data.get("original_channel_id"):
                 try:
                     channel = bot.get_channel(int(button_data["original_channel_id"]))
                     if channel is None:
                         channel = await bot.fetch_channel(int(button_data["original_channel_id"]))
+
                     original_message = await channel.fetch_message(int(button_data["original_message_id"]))
                 except Exception as e:
                     print("버튼 기록 원본 접근 실패:", repr(e))
@@ -173,9 +201,11 @@ class ConfirmView(discord.ui.View):
 
             if original_message is None:
                 thumbnail_message = await find_thumbnail_message_for_button(button_message)
+
                 if thumbnail_message and thumbnail_message.attachments:
                     thumbnail_filename = thumbnail_message.attachments[0].filename
                     original_filename = get_original_filename(thumbnail_filename)
+
                     original_message = await find_original_message_by_filename(
                         interaction.guild,
                         original_filename,
@@ -192,11 +222,8 @@ class ConfirmView(discord.ui.View):
             file = await original_message.attachments[0].to_file()
             await interaction.user.send("원본 파일", file=file)
 
-            log_channel = discord.utils.get(interaction.guild.text_channels, name="로그")
-            if log_channel:
-               member = interaction.guild.get_member(interaction.user.id)
-            await log_channel.send(f"{datetime.now()} | {member.display_name} | @{interaction.user.name} | {original_filename}")
-   
+            await send_log(interaction, original_filename, original_message)
+
             await interaction.response.edit_message(content="DM 전송 완료", view=None)
 
         except discord.Forbidden:
