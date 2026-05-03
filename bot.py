@@ -194,10 +194,9 @@ class ConfirmView(discord.ui.View):
 
             log_channel = discord.utils.get(interaction.guild.text_channels, name="로그")
             if log_channel:
-                await log_channel.send(
-                    f"{datetime.now()} | {interaction.user} | {interaction.user.id} | {original_filename}"
-                )
-
+               member = interaction.guild.get_member(interaction.user.id)
+            await log_channel.send(f"{datetime.now()} | {member.display_name} | @{interaction.user.name} | {original_filename}")
+   
             await interaction.response.edit_message(content="DM 전송 완료", view=None)
 
         except discord.Forbidden:
