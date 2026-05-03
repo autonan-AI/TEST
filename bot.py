@@ -193,10 +193,10 @@ class ConfirmView(discord.ui.View):
             await interaction.user.send("원본 파일", file=file)
 
             log_channel = discord.utils.get(interaction.guild.text_channels, name="로그")
-if log_channel:
-    await log_channel.send(
-        f"{datetime.now()} | {interaction.user} | {interaction.user.id} | {original_filename}"
-    )
+            if log_channel:
+                await log_channel.send(
+                    f"{datetime.now()} | {interaction.user} | {interaction.user.id} | {original_filename}"
+                )
 
             await interaction.response.edit_message(content="DM 전송 완료", view=None)
 
