@@ -65,6 +65,20 @@ def check_license(license_id):
         "license_id":license_id
     })
 
+
+
+@app.route("/admin/reset_pc/<license_id>")
+def reset_pc(license_id):
+    lic = LICENSES.get(license_id)
+    if not lic:
+        return jsonify({"ok": False, "status": "not_found"})
+    lic["pc_id"] = None
+    return jsonify({
+        "ok": True,
+        "status": "pc_reset",
+        "license_id": license_id
+    })
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT",8000))
     app.run(host="0.0.0.0",port=port)
