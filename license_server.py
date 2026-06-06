@@ -1,6 +1,6 @@
 import os
-from datetime import datetime, timezone
-from flask import Flask, jsonify, request
+from datetime import datetime, timezone, timedelta
+from flask import Flask, jsonify, request, redirect, url_for, render_template_string
 
 app = Flask(__name__)
 
@@ -66,6 +66,87 @@ def check_license(license_id):
     })
 
 
+
+
+
+ADMIN_HTML = """
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>달려 이미지툴 라이센스 관리</title>
+<style>
+body { font-family: Arial, sans-serif; background:#111; color:#eee; padding:24px; }
+h1 { margin-bottom:18px; }
+table { border-collapse:collapse; width:100%; background:#1b1b1b; }
+th, td { border:1px solid #444; padding:10px; text-align:center; }
+th { background:#2a2a2a; }
+a, button { display:inline-block; margin:2px; padding:7px 10px; color:#fff; background:#444; text-decoration:none; border:0; border-radius:4px; cursor:pointer; }
+.active { color:#64ff8a; font-weight:bold; }
+.inactive { color:#ff7070; font-weight:bold; }
+.small { color:#aaa; font-size:13px; margin-bottom:16px; }
+</style>
+</head>
+<body>
+<h1>달려 이미지툴 라이센스 관리</h1>
+<div class="small">서버 날짜: {{ server_date }}</div>
+<table>
+<tr>
+<th>회원번호</th>
+<th>상태</th>
+<th>만료일</th>
+<th>PC 등록</th>
+<th>관리</th>
+</tr>
+{% for license_id, lic in licenses.items() %}
+<tr>
+<td>{{ license_id }}</td>
+<td class="{{ lic.status }}">{{ lic.status }}</td>
+<td>{{ lic.expire }}</td>
+<td>{{ "등록됨" if lic.pc_id else "미등록" }}</td>
+<td>
+<a href="/admin/extend/{{ license_id }}/30">30일 연장</a>
+<a href="/admin/set_status/{{ license_id }}/active">활성</a>
+<a href="/admin/set_status/{{ license_id }}/inactive">비활성</a>
+<a href="/admin/reset_pc/{{ license_id }}">PC 초기화</a>
+</td>
+</tr>
+{% endfor %}
+</table>
+</body>
+</html>
+"""
+
+@app.route("/admin")
+def admin_page():
+    return render_template_string(
+        ADMIN_HTML,
+        licenses=LICENSES,
+        server_date=str(get_server_date())
+    )
+
+@app.route("/admin/set_status/<license_id>/<status>")
+def admin_set_status(license_id, status):
+    if status not in ["active", "inactive"]:
+        return jsonify({"ok": False, "status": "invalid_status"})
+    lic = LICENSES.get(license_id)
+    if not lic:
+        return jsonify({"ok": False, "status": "not_found"})
+    lic["status"] = status
+    return redirect(url_for("admin_page"))
+
+@app.route("/admin/extend/<license_id>/<int:days>")
+def admin_extend_license(license_id, days):
+    if days <= 0:
+        return jsonify({"ok": False, "status": "invalid_days"})
+    lic = LICENSES.get(license_id)
+    if not lic:
+        return jsonify({"ok": False, "status": "not_found"})
+    today = get_server_date()
+    expire_date = parse_expire_date(lic["expire"])
+    base_date = expire_date if expire_date > today else today
+    lic["expire"] = (base_date + timedelta(days=days)).strftime("%Y-%m-%d")
+    return redirect(url_for("admin_page"))
 
 @app.route("/admin/reset_pc/<license_id>")
 def reset_pc(license_id):
