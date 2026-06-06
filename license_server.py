@@ -1,8 +1,11 @@
 import os
 from datetime import datetime, timezone, timedelta
-from flask import Flask, jsonify, request, redirect, url_for, render_template_string
+from flask import Flask, jsonify, request, redirect, url_for, render_template_string, session
 
 app = Flask(__name__)
+app.secret_key = os.environ.get("ADMIN_SECRET_KEY", "CHANGE_ME_ADMIN_SECRET")
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "1234")
+
 
 LICENSES = {
     "DLY-00018": {
@@ -81,6 +84,56 @@ def format_pc_id(pc_id):
         return pc_id
     return f"{pc_id[:6]}...{pc_id[-6:]}"
 
+
+LOGIN_HTML = """
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>관리자 로그인</title>
+<style>
+body { font-family: Arial, sans-serif; background:#111; color:#eee; padding:24px; }
+input { padding:10px; background:#222; color:#fff; border:1px solid #555; }
+button { padding:10px 16px; background:#444; color:#fff; border:0; border-radius:4px; }
+.error { color:#ff7070; margin-top:10px; }
+</style>
+</head>
+<body>
+<h1>관리자 로그인</h1>
+<form method="post">
+<input type="password" name="password" placeholder="관리자 비밀번호">
+<button type="submit">로그인</button>
+</form>
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+</body>
+</html>
+"""
+
+def is_admin_logged_in():
+    return session.get("admin_logged_in") is True
+
+def require_admin():
+    if not is_admin_logged_in():
+        return redirect(url_for("admin_login"))
+    return None
+
+@app.route("/admin/login", methods=["GET", "POST"])
+def admin_login():
+    error = ""
+    if request.method == "POST":
+        password = request.form.get("password", "")
+        if password == ADMIN_PASSWORD:
+            session["admin_logged_in"] = True
+            return redirect(url_for("admin_page"))
+        error = "비밀번호가 틀렸습니다."
+    return render_template_string(LOGIN_HTML, error=error)
+
+@app.route("/admin/logout")
+def admin_logout():
+    session.clear()
+    return redirect(url_for("admin_login"))
+
+
 ADMIN_HTML = """
 <!doctype html>
 <html lang="ko">
@@ -101,7 +154,7 @@ a, button { display:inline-block; margin:2px; padding:7px 10px; color:#fff; back
 </head>
 <body>
 <h1>달려 이미지툴 라이센스 관리</h1>
-<div class="small">서버 날짜: {{ server_date }}</div>
+<div class="small">서버 날짜: {{ server_date }} | <a href="/admin/logout">로그아웃</a></div>
 <table>
 <tr>
 <th>회원번호</th>
@@ -135,6 +188,9 @@ a, button { display:inline-block; margin:2px; padding:7px 10px; color:#fff; back
 
 @app.route("/admin")
 def admin_page():
+    auth = require_admin()
+    if auth:
+        return auth
     return render_template_string(
         ADMIN_HTML,
         licenses=LICENSES,
@@ -144,6 +200,9 @@ def admin_page():
 
 @app.route("/admin/set_status/<license_id>/<status>")
 def admin_set_status(license_id, status):
+    auth = require_admin()
+    if auth:
+        return auth
     if status not in ["active", "inactive"]:
         return jsonify({"ok": False, "status": "invalid_status"})
     lic = LICENSES.get(license_id)
@@ -154,6 +213,9 @@ def admin_set_status(license_id, status):
 
 @app.route("/admin/extend/<license_id>/<int:days>")
 def admin_extend_license(license_id, days):
+    auth = require_admin()
+    if auth:
+        return auth
     if days <= 0:
         return jsonify({"ok": False, "status": "invalid_days"})
     lic = LICENSES.get(license_id)
@@ -167,6 +229,9 @@ def admin_extend_license(license_id, days):
 
 @app.route("/admin/reset_pc/<license_id>")
 def reset_pc(license_id):
+    auth = require_admin()
+    if auth:
+        return auth
     lic = LICENSES.get(license_id)
     if not lic:
         return jsonify({"ok": False, "status": "not_found"})
