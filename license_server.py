@@ -213,6 +213,7 @@ th, td { border:1px solid #444; padding:10px; text-align:center; }
 th { background:#2a2a2a; }
 a, button { display:inline-block; margin:2px; padding:7px 10px; color:#fff; background:#444; text-decoration:none; border:0; border-radius:4px; cursor:pointer; }
 input { padding:7px; background:#222; color:#fff; border:1px solid #555; width:150px; }
+.cdkey_input { width:300px; font-family:monospace; }
 .active { color:#64ff8a; font-weight:bold; }
 .inactive { color:#ff7070; font-weight:bold; }
 .small { color:#aaa; font-size:13px; margin-bottom:16px; }
@@ -246,7 +247,7 @@ input { padding:7px; background:#222; color:#fff; border:1px solid #555; width:1
 <button type="submit">저장</button>
 </form>
 </td>
-<td title="{{ lic.cd_key }}">{{ format_cd_key(lic.cd_key) }}</td>
+<td><input class="cdkey_input" value="{{ lic.cd_key }}" readonly onclick="this.select(); document.execCommand('copy');"></td>
 <td class="{{ lic.status }}">{{ lic.status }}</td>
 <td>{{ lic.expire }}</td>
 <td>{{ "등록됨" if lic.pc_id else "미등록" }}</td>
