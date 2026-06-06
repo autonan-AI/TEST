@@ -4,33 +4,29 @@ import secrets
 import string
 from datetime import datetime, timezone, timedelta
 from flask import Flask, jsonify, request, redirect, url_for, render_template_string, session
+import psycopg2
+import psycopg2.extras
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("ADMIN_SECRET_KEY", "CHANGE_ME_ADMIN_SECRET")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "1234")
+ADMIN_CD_KEY = os.environ.get("ADMIN_CD_KEY", "ADMIN-PERMANENT-CDKEY-CHANGE-ME")
+
+
+def get_db_url():
+    return os.environ.get("DATABASE_URL")
+
+
+def get_conn():
+    db_url = get_db_url()
+    if not db_url:
+        raise RuntimeError("DATABASE_URL is not set")
+    return psycopg2.connect(db_url, cursor_factory=psycopg2.extras.RealDictCursor)
 
 
 def generate_cd_key():
     alphabet = string.ascii_uppercase + string.digits
-    groups = []
-    for _ in range(5):
-        groups.append("".join(secrets.choice(alphabet) for _ in range(4)))
-    return "-".join(groups)
-
-
-ADMIN_CD_KEY = os.environ.get("ADMIN_CD_KEY", generate_cd_key())
-
-LICENSES = {
-    "DLY-000000": {
-        "discord_name": "관리자",
-        "cd_key": ADMIN_CD_KEY,
-        "status": "active",
-        "expire": "PERMANENT",
-        "pc_id": None,
-        "last_seen": None,
-        "protected": True
-    }
-}
+    return "-".join("".join(secrets.choice(alphabet) for _ in range(4)) for _ in range(5))
 
 
 def get_server_date():
@@ -50,20 +46,73 @@ def format_pc_id(pc_id):
     return f"{pc_id[:6]}...{pc_id[-6:]}"
 
 
-def format_cd_key(cd_key):
-    if not cd_key:
-        return "-"
-    cd_key = str(cd_key)
-    if len(cd_key) <= 12:
-        return cd_key
-    return f"{cd_key[:9]}...{cd_key[-6:]}"
+def init_db():
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS licenses (
+                    member_id TEXT PRIMARY KEY,
+                    discord_name TEXT NOT NULL DEFAULT '',
+                    cd_key TEXT UNIQUE NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    expire TEXT NOT NULL,
+                    pc_id TEXT,
+                    last_seen TEXT,
+                    protected BOOLEAN NOT NULL DEFAULT FALSE,
+                    created_at TEXT NOT NULL DEFAULT ''
+                )
+            """)
+            cur.execute("SELECT member_id FROM licenses WHERE member_id = %s", ("DLY-000000",))
+            if cur.fetchone() is None:
+                cur.execute("""
+                    INSERT INTO licenses
+                    (member_id, discord_name, cd_key, status, expire, pc_id, last_seen, protected, created_at)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                """, (
+                    "DLY-000000",
+                    "관리자",
+                    ADMIN_CD_KEY,
+                    "active",
+                    "PERMANENT",
+                    None,
+                    None,
+                    True,
+                    datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+                ))
+        conn.commit()
+
+
+def get_all_licenses():
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM licenses ORDER BY member_id ASC")
+            return cur.fetchall()
+
+
+def get_license_by_cd_key(cd_key):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM licenses WHERE cd_key = %s", (cd_key,))
+            return cur.fetchone()
+
+
+def get_license_by_member_id(member_id):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM licenses WHERE member_id = %s", (member_id,))
+            return cur.fetchone()
 
 
 def get_next_member_id():
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT member_id FROM licenses WHERE member_id LIKE 'DLY-%'")
+            rows = cur.fetchall()
+
     max_number = 0
     pattern = re.compile(r"^DLY-(\d{6})$")
-    for member_id in LICENSES.keys():
-        match = pattern.match(member_id)
+    for row in rows:
+        match = pattern.match(row["member_id"])
         if match:
             number = int(match.group(1))
             if number != 0:
@@ -71,18 +120,38 @@ def get_next_member_id():
     return f"DLY-{max_number + 1:06d}"
 
 
-def find_license_by_cd_key(cd_key):
-    for member_id, lic in LICENSES.items():
-        if lic.get("cd_key") == cd_key:
-            return member_id, lic
-    return None, None
+def unique_cd_key():
+    while True:
+        cd_key = generate_cd_key()
+        if get_license_by_cd_key(cd_key) is None:
+            return cd_key
+
+
+def update_license(member_id, **fields):
+    if not fields:
+        return
+    keys = list(fields.keys())
+    values = [fields[k] for k in keys]
+    set_clause = ", ".join([f"{k} = %s" for k in keys])
+    values.append(member_id)
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(f"UPDATE licenses SET {set_clause} WHERE member_id = %s", values)
+        conn.commit()
+
+
+@app.before_request
+def ensure_db_ready():
+    init_db()
 
 
 @app.route("/")
 def index():
     return jsonify({
         "service": "Dallyo Image Tool License Server",
-        "status": "online"
+        "status": "online",
+        "db": "postgresql"
     })
 
 
@@ -97,38 +166,41 @@ def check_license(cd_key):
     if not pc_id:
         return jsonify({"ok": False, "usable": False, "status": "pc_id_required", "expire": "확인불가"})
 
-    member_id, lic = find_license_by_cd_key(cd_key)
+    lic = get_license_by_cd_key(cd_key)
     if not lic:
         return jsonify({"ok": False, "usable": False, "status": "not_found", "expire": "확인불가"})
 
-    if lic.get("pc_id") is None:
-        lic["pc_id"] = pc_id
+    member_id = lic["member_id"]
 
-    lic["last_seen"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    if lic["pc_id"] is None:
+        update_license(member_id, pc_id=pc_id)
 
-    if lic.get("pc_id") != pc_id:
+    last_seen = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    update_license(member_id, last_seen=last_seen)
+
+    lic = get_license_by_member_id(member_id)
+
+    if lic["pc_id"] != pc_id:
         return jsonify({
             "ok": False,
             "usable": False,
             "status": "pc_mismatch",
-            "expire": lic.get("expire", "확인불가"),
+            "expire": lic["expire"],
             "member_id": member_id,
             "message": "This license is registered to another PC."
         })
 
-    if lic.get("status") != "active":
+    if lic["status"] != "active":
         return jsonify({
             "ok": True,
             "usable": False,
             "status": "inactive",
-            "expire": lic.get("expire", "확인불가"),
+            "expire": lic["expire"],
             "member_id": member_id
         })
 
-    if lic.get("expire") != "PERMANENT":
-        server_date = get_server_date()
-        expire_date = parse_expire_date(lic["expire"])
-        if server_date > expire_date:
+    if lic["expire"] != "PERMANENT":
+        if get_server_date() > parse_expire_date(lic["expire"]):
             return jsonify({
                 "ok": True,
                 "usable": False,
@@ -141,7 +213,7 @@ def check_license(cd_key):
         "ok": True,
         "usable": True,
         "status": "active",
-        "expire": lic.get("expire", "확인불가"),
+        "expire": lic["expire"],
         "member_id": member_id
     })
 
@@ -222,7 +294,7 @@ input { padding:7px; background:#222; color:#fff; border:1px solid #555; width:1
 </head>
 <body>
 <h1>달려 이미지툴 라이센스 관리</h1>
-<div class="small">서버 날짜: {{ server_date }} | <a href="/admin/logout">로그아웃</a></div>
+<div class="small">서버 날짜: {{ server_date }} | DB: PostgreSQL | <a href="/admin/logout">로그아웃</a></div>
 <div style="margin-bottom:14px;">
 <a href="/admin/create_member">새 회원 생성</a>
 </div>
@@ -238,11 +310,11 @@ input { padding:7px; background:#222; color:#fff; border:1px solid #555; width:1
 <th>마지막 접속</th>
 <th>관리</th>
 </tr>
-{% for member_id, lic in licenses.items() %}
+{% for lic in licenses %}
 <tr>
-<td class="{{ 'protected' if lic.protected else '' }}">{{ member_id }}</td>
+<td class="{{ 'protected' if lic.protected else '' }}">{{ lic.member_id }}</td>
 <td>
-<form method="post" action="/admin/update_name/{{ member_id }}">
+<form method="post" action="/admin/update_name/{{ lic.member_id }}">
 <input name="discord_name" value="{{ lic.discord_name }}">
 <button type="submit">저장</button>
 </form>
@@ -256,12 +328,12 @@ input { padding:7px; background:#222; color:#fff; border:1px solid #555; width:1
 <td>
 {% if lic.protected %}
 보호됨
-<a href="/admin/reset_pc/{{ member_id }}">PC 초기화</a>
+<a href="/admin/reset_pc/{{ lic.member_id }}">PC 초기화</a>
 {% else %}
-<a href="/admin/extend/{{ member_id }}/30">30일 연장</a>
-<a href="/admin/set_status/{{ member_id }}/active">활성</a>
-<a href="/admin/set_status/{{ member_id }}/inactive">비활성</a>
-<a href="/admin/reset_pc/{{ member_id }}">PC 초기화</a>
+<a href="/admin/extend/{{ lic.member_id }}/30">30일 연장</a>
+<a href="/admin/set_status/{{ lic.member_id }}/active">활성</a>
+<a href="/admin/set_status/{{ lic.member_id }}/inactive">비활성</a>
+<a href="/admin/reset_pc/{{ lic.member_id }}">PC 초기화</a>
 {% endif %}
 </td>
 </tr>
@@ -279,10 +351,9 @@ def admin_page():
         return auth
     return render_template_string(
         ADMIN_HTML,
-        licenses=LICENSES,
+        licenses=get_all_licenses(),
         server_date=str(get_server_date()),
-        format_pc_id=format_pc_id,
-        format_cd_key=format_cd_key
+        format_pc_id=format_pc_id
     )
 
 
@@ -293,20 +364,26 @@ def admin_create_member():
         return auth
 
     member_id = get_next_member_id()
-    cd_key = generate_cd_key()
+    cd_key = unique_cd_key()
 
-    while find_license_by_cd_key(cd_key)[1] is not None:
-        cd_key = generate_cd_key()
-
-    LICENSES[member_id] = {
-        "discord_name": "",
-        "cd_key": cd_key,
-        "status": "active",
-        "expire": (get_server_date() + timedelta(days=30)).strftime("%Y-%m-%d"),
-        "pc_id": None,
-        "last_seen": None,
-        "protected": False
-    }
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO licenses
+                (member_id, discord_name, cd_key, status, expire, pc_id, last_seen, protected, created_at)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            """, (
+                member_id,
+                "",
+                cd_key,
+                "active",
+                (get_server_date() + timedelta(days=30)).strftime("%Y-%m-%d"),
+                None,
+                None,
+                False,
+                datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+            ))
+        conn.commit()
 
     return redirect(url_for("admin_page"))
 
@@ -317,11 +394,10 @@ def admin_update_name(member_id):
     if auth:
         return auth
 
-    lic = LICENSES.get(member_id)
-    if not lic:
+    if get_license_by_member_id(member_id) is None:
         return jsonify({"ok": False, "status": "not_found"})
 
-    lic["discord_name"] = request.form.get("discord_name", "").strip()
+    update_license(member_id, discord_name=request.form.get("discord_name", "").strip())
     return redirect(url_for("admin_page"))
 
 
@@ -334,14 +410,14 @@ def admin_set_status(member_id, status):
     if status not in ["active", "inactive"]:
         return jsonify({"ok": False, "status": "invalid_status"})
 
-    lic = LICENSES.get(member_id)
+    lic = get_license_by_member_id(member_id)
     if not lic:
         return jsonify({"ok": False, "status": "not_found"})
 
-    if lic.get("protected"):
+    if lic["protected"]:
         return redirect(url_for("admin_page"))
 
-    lic["status"] = status
+    update_license(member_id, status=status)
     return redirect(url_for("admin_page"))
 
 
@@ -354,17 +430,17 @@ def admin_extend_license(member_id, days):
     if days <= 0:
         return jsonify({"ok": False, "status": "invalid_days"})
 
-    lic = LICENSES.get(member_id)
+    lic = get_license_by_member_id(member_id)
     if not lic:
         return jsonify({"ok": False, "status": "not_found"})
 
-    if lic.get("protected") or lic.get("expire") == "PERMANENT":
+    if lic["protected"] or lic["expire"] == "PERMANENT":
         return redirect(url_for("admin_page"))
 
     today = get_server_date()
     expire_date = parse_expire_date(lic["expire"])
     base_date = expire_date if expire_date > today else today
-    lic["expire"] = (base_date + timedelta(days=days)).strftime("%Y-%m-%d")
+    update_license(member_id, expire=(base_date + timedelta(days=days)).strftime("%Y-%m-%d"))
     return redirect(url_for("admin_page"))
 
 
@@ -374,12 +450,11 @@ def reset_pc(member_id):
     if auth:
         return auth
 
-    lic = LICENSES.get(member_id)
+    lic = get_license_by_member_id(member_id)
     if not lic:
         return jsonify({"ok": False, "status": "not_found"})
 
-    lic["pc_id"] = None
-    lic["last_seen"] = None
+    update_license(member_id, pc_id=None, last_seen=None)
     return redirect(url_for("admin_page"))
 
 
