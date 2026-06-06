@@ -8,7 +8,8 @@ LICENSES = {
     "DLY-00018": {
         "status": "active",
         "expire": "2026-07-10",
-        "pc_id": None
+        "pc_id": None,
+        "last_seen": None
     }
 }
 
@@ -48,6 +49,8 @@ def check_license(license_id):
     if lic["pc_id"] is None:
         lic["pc_id"] = pc_id
 
+    lic["last_seen"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
     if lic["pc_id"] != pc_id:
         return jsonify({
             "ok":False,
@@ -68,6 +71,15 @@ def check_license(license_id):
 
 
 
+
+
+def format_pc_id(pc_id):
+    if not pc_id:
+        return "미등록"
+    pc_id = str(pc_id)
+    if len(pc_id) <= 12:
+        return pc_id
+    return f"{pc_id[:6]}...{pc_id[-6:]}"
 
 ADMIN_HTML = """
 <!doctype html>
@@ -96,6 +108,8 @@ a, button { display:inline-block; margin:2px; padding:7px 10px; color:#fff; back
 <th>상태</th>
 <th>만료일</th>
 <th>PC 등록</th>
+<th>PC ID</th>
+<th>마지막 접속</th>
 <th>관리</th>
 </tr>
 {% for license_id, lic in licenses.items() %}
@@ -104,6 +118,8 @@ a, button { display:inline-block; margin:2px; padding:7px 10px; color:#fff; back
 <td class="{{ lic.status }}">{{ lic.status }}</td>
 <td>{{ lic.expire }}</td>
 <td>{{ "등록됨" if lic.pc_id else "미등록" }}</td>
+<td>{{ format_pc_id(lic.pc_id) }}</td>
+<td>{{ lic.last_seen if lic.last_seen else "-" }}</td>
 <td>
 <a href="/admin/extend/{{ license_id }}/30">30일 연장</a>
 <a href="/admin/set_status/{{ license_id }}/active">활성</a>
@@ -122,7 +138,8 @@ def admin_page():
     return render_template_string(
         ADMIN_HTML,
         licenses=LICENSES,
-        server_date=str(get_server_date())
+        server_date=str(get_server_date()),
+        format_pc_id=format_pc_id
     )
 
 @app.route("/admin/set_status/<license_id>/<status>")
@@ -154,6 +171,7 @@ def reset_pc(license_id):
     if not lic:
         return jsonify({"ok": False, "status": "not_found"})
     lic["pc_id"] = None
+    lic["last_seen"] = None
     return jsonify({
         "ok": True,
         "status": "pc_reset",
