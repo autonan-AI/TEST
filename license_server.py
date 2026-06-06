@@ -319,7 +319,12 @@ input { padding:7px; background:#222; color:#fff; border:1px solid #555; width:1
 <button type="submit">저장</button>
 </form>
 </td>
-<td><input class="cdkey_input" value="{{ lic.cd_key }}" readonly onclick="this.select(); document.execCommand('copy');"></td>
+<td>
+<form method="post" action="/admin/update_cdkey/{{ lic.member_id }}">
+<input class="cdkey_input" name="cd_key" value="{{ lic.cd_key }}" onclick="this.select();">
+<button type="submit">저장</button>
+</form>
+</td>
 <td class="{{ lic.status }}">{{ lic.status }}</td>
 <td>{{ lic.expire }}</td>
 <td>{{ "등록됨" if lic.pc_id else "미등록" }}</td>
@@ -398,6 +403,30 @@ def admin_update_name(member_id):
         return jsonify({"ok": False, "status": "not_found"})
 
     update_license(member_id, discord_name=request.form.get("discord_name", "").strip())
+    return redirect(url_for("admin_page"))
+
+
+
+
+@app.route("/admin/update_cdkey/<member_id>", methods=["POST"])
+def admin_update_cdkey(member_id):
+    auth = require_admin()
+    if auth:
+        return auth
+
+    lic = get_license_by_member_id(member_id)
+    if not lic:
+        return jsonify({"ok": False, "status": "not_found"})
+
+    new_cd_key = request.form.get("cd_key", "").strip()
+    if not new_cd_key:
+        return jsonify({"ok": False, "status": "empty_cd_key"})
+
+    existing = get_license_by_cd_key(new_cd_key)
+    if existing and existing["member_id"] != member_id:
+        return jsonify({"ok": False, "status": "cd_key_already_exists"})
+
+    update_license(member_id, cd_key=new_cd_key)
     return redirect(url_for("admin_page"))
 
 
