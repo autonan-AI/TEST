@@ -1,4 +1,5 @@
 import os
+import re
 from datetime import datetime, timezone, timedelta
 from flask import Flask, jsonify, request, redirect, url_for, render_template_string, session
 
@@ -75,6 +76,16 @@ def check_license(license_id):
 
 
 
+
+
+def get_next_license_id():
+    max_number = 0
+    pattern = re.compile(r"^DLY-(\d+)$")
+    for license_id in LICENSES.keys():
+        match = pattern.match(license_id)
+        if match:
+            max_number = max(max_number, int(match.group(1)))
+    return f"DLY-{max_number + 1:05d}"
 
 def format_pc_id(pc_id):
     if not pc_id:
@@ -155,6 +166,9 @@ a, button { display:inline-block; margin:2px; padding:7px 10px; color:#fff; back
 <body>
 <h1>달려 이미지툴 라이센스 관리</h1>
 <div class="small">서버 날짜: {{ server_date }} | <a href="/admin/logout">로그아웃</a></div>
+<div style="margin-bottom:14px;">
+<a href="/admin/create_license">새 CD키 생성</a>
+</div>
 <table>
 <tr>
 <th>회원번호</th>
@@ -197,6 +211,21 @@ def admin_page():
         server_date=str(get_server_date()),
         format_pc_id=format_pc_id
     )
+
+
+@app.route("/admin/create_license")
+def admin_create_license():
+    auth = require_admin()
+    if auth:
+        return auth
+    license_id = get_next_license_id()
+    LICENSES[license_id] = {
+        "status": "active",
+        "expire": (get_server_date() + timedelta(days=30)).strftime("%Y-%m-%d"),
+        "pc_id": None,
+        "last_seen": None
+    }
+    return redirect(url_for("admin_page"))
 
 @app.route("/admin/set_status/<license_id>/<status>")
 def admin_set_status(license_id, status):
